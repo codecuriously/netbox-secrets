@@ -4,7 +4,7 @@ from Crypto.PublicKey import RSA
 from django.conf import settings
 from django.http import HttpResponseBadRequest
 from drf_spectacular import utils as drf_utils
-from rest_framework import mixins as drf_mixins
+from rest_framework import status, mixins as drf_mixins
 from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
@@ -16,6 +16,8 @@ from netbox.api.viewsets import BaseViewSet, mixins, NetBoxModelViewSet
 from utilities.utils import count_related
 from . import serializers
 from .. import constants, exceptions, filtersets, models
+from ..models import UserKey
+from ..utils import generate_random_key
 
 plugin_settings = settings.PLUGINS_CONFIG.get('netbox_secrets', {})
 public_key_size = plugin_settings.get('public_key_size')
@@ -41,9 +43,28 @@ class SecretsRootView(APIRootView):
 class UserKeyViewSet(ModelViewSet):
     queryset = models.UserKey.objects.all()
     serializer_class = serializers.UserKeySerializer
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         return super().get_queryset().filter(user=self.request.user)
+
+    def create(self, request, *args, **kwargs):
+        """
+        Create a new object.
+        """
+        serializer = self.serializer_class(data=request.data, context={'request': request})
+        try:
+            serializer.is_valid(raise_exception=True)
+        except ValidationError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        master_key = generate_random_key()
+        user_key = UserKey(public_key=serializer.validated_data['public_key'], master_key_cipher=master_key)
+        user_key.user = request.user
+        user_key.activate(master_key)
+        user_key.save()
+
+        return Response(serializer.validated_data, status=status.HTTP_201_CREATED)
 
 
 #
